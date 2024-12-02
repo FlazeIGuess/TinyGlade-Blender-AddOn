@@ -5,9 +5,10 @@ bl_info = {
 }
 
 import bpy
+import numpy as np
 import json
-from bpy_extras.io_utils import ExportHelper, ImportHelper
 from mathutils import Vector
+from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 # Import Operator
 class ImportTinyGladeJSON(bpy.types.Operator, ImportHelper):
@@ -22,23 +23,26 @@ class ImportTinyGladeJSON(bpy.types.Operator, ImportHelper):
         # Open and parse the JSON file
         with open(self.filepath, 'r') as f:
             data = json.load(f)
-
+        vertex_positions = np.array([Vector(v) for v in data.get("Vertex_Position",{}).get("buffer", [])])
+        vertex_normals = np.array([Vector(v) for v in data.get("Vertex_Normal",{}).get("buffer", [])])
+        vertex_colors = data.get("Vertex_Color",{}).get("buffer", [])
+        vertex_UV = data.get("Vertex_UV",{}).get("buffer", [])
+        indices = data.get("indices",{}).get("buffer", [])
+        faces = [indices[i:i+3] for i in range(0, len(indices), 3)]
         # Create a new mesh and object
         mesh = bpy.data.meshes.new("TinyGladeMesh")
         obj = bpy.data.objects.new("TinyGladeObject", mesh)
         bpy.context.collection.objects.link(obj)
-
-        # Prepare the geometry (vertices, faces)
-        vertices = [Vector(v) for v in data['Vertex_Position']['buffer']]
-        faces = [(data['indices']['buffer'][i],
-                  data['indices']['buffer'][i+1],
-                  data['indices']['buffer'][i+2])
-                 for i in range(0, len(data['indices']['buffer']), 3)]
-
         # Assign geometry to mesh
-        mesh.from_pydata(vertices, [], faces)
+        mesh.from_pydata(vertex_positions, [], faces)
+        mesh.normals_split_custom_set_from_vertices(vertex_normals)
+        if not mesh.vertex_colors:
+            mesh.vertex_colors.new()
+        color_layer = mesh.vertex_colors.active
+        # Assign colors to vertices
+        for v in mesh.vertices: 
+            color_layer.data[v.index].color = (*vertex_colors[v.index], 1.0)  # Add alpha value of 1.0
         mesh.update()
-
         return {'FINISHED'}
 
 # Export Operator
@@ -60,7 +64,9 @@ class ExportTinyGladeJSON(bpy.types.Operator, ExportHelper):
 
         # Apply object transformations (scale, rotation, translation) to vertices
         vertices = [list(obj.matrix_world @ vertex.co) for vertex in mesh.vertices]
-
+        color_layer = []
+        for v in mesh.vertex_colors.active.data:
+            color_layer.append(list(v.color)[:-1])
         # Ensure mesh is triangulated
         bpy.ops.object.mode_set(mode='OBJECT')
         bpy.ops.object.select_all(action='DESELECT')
@@ -70,7 +76,7 @@ class ExportTinyGladeJSON(bpy.types.Operator, ExportHelper):
         bpy.ops.mesh.select_all(action='SELECT')
         bpy.ops.mesh.quads_convert_to_tris()
         bpy.ops.object.mode_set(mode='OBJECT')
-
+        vertex_normals = [tuple(v.normal) for v in mesh.vertices]
         # Collect face indices (ensure triangles)
         faces = []
         for poly in mesh.polygons:
@@ -80,7 +86,9 @@ class ExportTinyGladeJSON(bpy.types.Operator, ExportHelper):
         data = {
             'attributes': ['Vertex_Position', 'Vertex_Normal', 'Vertex_Color'],
             'indices': {'type': ['int', 1], 'buffer': faces},
-            'Vertex_Position': {'type': ['float', 3], 'buffer': vertices}
+            'Vertex_Position': {'type': ['float', 3], 'buffer': vertices},
+            'Vertex_Normal' : {'type': ['float', 3], 'buffer': vertex_normals},
+            'Vertex_Color': {'type': ['float', 3], 'buffer': color_layer},
         }
 
         # Save to file
